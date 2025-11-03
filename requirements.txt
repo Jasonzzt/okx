@@ -1,0 +1,21 @@
+# 依赖包列表
+
+# OKX API
+okx>=1.0.0
+
+# HTTP请求
+requests>=2.31.0
+httpx>=0.24.0
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 环境变量
+python-dotenv>=1.0.0
+
+# 数据库
+sqlite3  # Python内置，无需安装
+
+# 其他
+pytz>=2023.3

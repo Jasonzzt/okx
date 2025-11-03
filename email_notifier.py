@@ -70,6 +70,52 @@ class EmailNotifier:
         support_levels = analysis_data.get('support_levels', [])
         resistance_levels = analysis_data.get('resistance_levels', [])
         inst_id = analysis_data.get('inst_id', 'UNKNOWN')
+        position_action = analysis_data.get('position_action', 'HOLD')
+        stop_adjustment = analysis_data.get('stop_adjustment', {})
+        urgent_action = analysis_data.get('urgent_action', False)
+        urgent_reason = analysis_data.get('urgent_reason', '')
+        
+        # 构建紧急提醒部分
+        urgent_html = ""
+        if urgent_action:
+            urgent_html = f"""
+            <div style="background-color: #ff6b6b; color: white; padding: 20px; border-radius: 5px; margin: 15px 0; text-align: center;">
+                <h2>🚨 紧急操作提醒 🚨</h2>
+                <p style="font-size: 18px; font-weight: bold;">{urgent_reason}</p>
+            </div>
+            """
+        
+        # 构建持仓操作建议部分
+        position_html = ""
+        if position_action != 'HOLD':
+            action_text = {
+                'CLOSE_ALL': '🔴 建议全部平仓',
+                'CLOSE_PARTIAL': '🟠 建议部分平仓',
+                'ADD': '🟢 建议加仓'
+            }.get(position_action, position_action)
+            
+            position_html = f"""
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107;">
+                <h3>📈 持仓操作建议</h3>
+                <p style="font-size: 16px; font-weight: bold;">{action_text}</p>
+            </div>
+            """
+        
+        # 构建止盈止损调整部分
+        stop_html = ""
+        if stop_adjustment.get('should_adjust', False):
+            tp = stop_adjustment.get('new_take_profit')
+            sl = stop_adjustment.get('new_stop_loss')
+            reason = stop_adjustment.get('reason', '')
+            
+            stop_html = f"""
+            <div style="background-color: #e7f3ff; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #007bff;">
+                <h3>⚙️ 止盈止损调整建议</h3>
+                {f'<p><strong>新止盈价:</strong> {tp} USDT</p>' if tp else ''}
+                {f'<p><strong>新止损价:</strong> {sl} USDT</p>' if sl else ''}
+                <p><strong>调整理由:</strong> {reason}</p>
+            </div>
+            """
         
         # 构建HTML邮件内容
         html = f"""
@@ -95,9 +141,15 @@ class EmailNotifier:
                 <p>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
             </div>
             
+            {urgent_html}
+            
             <div class="recommendation {recommendation.lower()}">
                 {'🟢 建议买入' if recommendation == 'BUY' else '🔴 建议卖出' if recommendation == 'SELL' else '🟡 建议持有'}
             </div>
+            
+            {position_html}
+            
+            {stop_html}
             
             <div class="info-box">
                 <h3>📊 交易概览</h3>
@@ -146,22 +198,41 @@ class EmailNotifier:
             msg['To'] = self.config.receiver_email
             
             # 添加HTML内容
-            html_part = MIMEText(body, 'html')
+            html_part = MIMEText(body, 'html', 'utf-8')
             msg.attach(html_part)
             
             # 发送邮件
-            if self.config.enable_ssl:
-                server = smtplib.SMTP_SSL(self.config.smtp_server, self.config.smtp_port)
-            else:
-                server = smtplib.SMTP(self.config.smtp_server, self.config.smtp_port)
-                server.starttls()
+            logger.info(f"正在连接到 {self.config.smtp_server}:{self.config.smtp_port}")
             
+            if self.config.smtp_port == 465:
+                # 465端口使用SSL
+                server = smtplib.SMTP_SSL(self.config.smtp_server, self.config.smtp_port, timeout=30)
+                logger.info("使用SSL连接")
+            else:
+                # 587端口使用STARTTLS
+                server = smtplib.SMTP(self.config.smtp_server, self.config.smtp_port, timeout=30)
+                logger.info("使用STARTTLS连接")
+                server.starttls()  # 启用TLS加密
+            
+            logger.info("正在登录...")
             server.login(self.config.sender_email, self.config.sender_password)
+            
+            logger.info("正在发送邮件...")
             server.send_message(msg)
             server.quit()
             
+            logger.info("✅ 邮件发送成功")
             return True
             
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f"邮件认证失败: {e}")
+            logger.error("请检查邮箱地址和应用专用密码是否正确")
+            return False
+        except smtplib.SMTPException as e:
+            logger.error(f"SMTP错误: {e}")
+            return False
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False

@@ -11,6 +11,7 @@ load_dotenv()
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from trading_bot import TradingAnalysisBot
+from strategy_config import print_strategy_info
 
 def setup_logging():
     """配置日志"""
@@ -35,10 +36,14 @@ def setup_logging():
 
 def main():
     """主函数"""
-    print("🚀 ETH-USDT-SWAP 智能交易分析系统启动中...")
+    print("🚀 智能交易分析系统启动中...")
     
     # 设置日志
     setup_logging()
+    
+    # 打印策略信息
+    strategy = os.getenv('TRADING_STRATEGY', 'balanced')
+    print_strategy_info(strategy)
     
     # 检查必要的环境变量
     required_env_vars = ['DEEPSEEK_API_KEY', 'SENDER_EMAIL', 'SENDER_PASSWORD', 'RECEIVER_EMAIL']

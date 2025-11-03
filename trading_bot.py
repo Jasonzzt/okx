@@ -2,7 +2,7 @@ import logging
 import time
 import json
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 
 from config import config
 from market_data import OKXMarketData
@@ -16,6 +16,7 @@ class TradingAnalysisBot:
     """交易分析机器人"""
     
     def __init__(self):
+        self.config = config  # 保存配置对象
         self.inst_id = config.trading.inst_id
         self.confidence_threshold = config.trading.confidence_threshold
         
@@ -54,6 +55,10 @@ class TradingAnalysisBot:
                 'reasoning': analysis_result.get('reasoning', ''),
                 'support_levels': analysis_result.get('support_levels', []),
                 'resistance_levels': analysis_result.get('resistance_levels', []),
+                'position_action': analysis_result.get('position_action', 'HOLD'),
+                'stop_adjustment': analysis_result.get('stop_adjustment', {}),
+                'urgent_action': analysis_result.get('urgent_action', False),
+                'urgent_reason': analysis_result.get('urgent_reason', ''),
                 'market_data_json': json.dumps(market_data),
                 'raw_response': json.dumps(analysis_result)
             }
@@ -63,9 +68,12 @@ class TradingAnalysisBot:
             analysis_data['record_id'] = record_id
             
             # 5. 检查是否需要发送邮件提醒
-            should_send_email = self._should_send_email_alert(analysis_data)
+            should_send_email = self._should_send_email_alert(analysis_result)
             if should_send_email:
                 self._send_email_alert(analysis_data)
+                analysis_data['email_sent'] = True
+            else:
+                analysis_data['email_sent'] = False
             
             # 6. 输出结果
             self._print_analysis_result(analysis_data)
@@ -80,17 +88,103 @@ class TradingAnalysisBot:
             logger.error(f"分析周期执行失败: {e}")
             return None
     
-    def _should_send_email_alert(self, analysis_data: Dict) -> bool:
-        """判断是否需要发送邮件提醒"""
-        confidence = analysis_data.get('confidence', 0)
-        recommendation = analysis_data.get('recommendation', 'HOLD')
+    def _should_send_email_alert(self, result: Dict[str, Any]) -> bool:
+        """判断是否应该发送邮件提醒
         
-        # 只有信心度超过阈值且不是HOLD建议时才发送邮件
-        if (confidence >= self.confidence_threshold and 
-            recommendation in ['BUY', 'SELL']):
+        只在以下情况发送邮件:
+        1. 买多 (BUY_LONG)
+        2. 买空 (BUY_SHORT)
+        3. 卖出 (SELL)
+        4. 需要大幅调整止盈止损 (adjustment_percent > 策略阈值)
+        5. 紧急操作 (urgent_action)
+        
+        同时需要 confidence 超过阈值
+        """
+        recommendation = result.get('recommendation', '').upper()
+        confidence = result.get('confidence', 0)
+        
+        # 紧急操作，无论信心度如何都发送
+        if result.get('urgent_action', False):
+            logger.info("检测到紧急操作，发送邮件提醒")
             return True
         
+        # 检查信心度是否超过阈值
+        if confidence < self.confidence_threshold:
+            logger.info(f"信心度 {confidence}% 低于阈值 {self.confidence_threshold}%，不发送邮件")
+            return False
+        
+        # 买多、买空、卖出操作
+        if recommendation in ['BUY_LONG', 'BUY_SHORT', 'SELL']:
+            logger.info(f"检测到 {recommendation} 操作，发送邮件提醒")
+            return True
+        
+        # 检查是否需要大幅调整止盈止损（根据策略阈值）
+        if recommendation == 'ADJUST_STOPS':
+            stop_adjustment = result.get('stop_adjustment', {})
+            adjustment_percent = stop_adjustment.get('adjustment_percent')
+            threshold = self.config.trading.adjustment_threshold
+            
+            if adjustment_percent:
+                adj_value = abs(float(adjustment_percent))
+                if adj_value > threshold:
+                    logger.info(f"检测到大幅调整 {adj_value:.2f}% > {threshold}%，发送邮件提醒")
+                    return True
+                else:
+                    logger.info(f"调整幅度 {adj_value:.2f}% 未超过阈值 {threshold}%，不发送邮件")
+            else:
+                logger.info("ADJUST_STOPS 但未提供 adjustment_percent，不发送邮件")
+            
         return False
+    
+    def _get_positions(self) -> List[Dict]:
+        """获取持仓列表"""
+        try:
+            return self.analyzer._load_positions(self.inst_id)
+        except Exception as e:
+            logger.error(f"获取持仓失败: {e}")
+            return []
+    
+    def _check_has_position(self, positions: List[Dict], inst_id: str) -> bool:
+        """检查是否有指定交易对的持仓"""
+        return any(p['inst_id'] == inst_id for p in positions)
+    
+    def _is_significant_stop_adjustment(self, stop_adjustment: Dict, current_price: float) -> bool:
+        """判断是否为大幅止盈止损调整"""
+        if not stop_adjustment.get('should_adjust', False) or current_price == 0:
+            return False
+        
+        # 获取当前持仓的止盈止损
+        try:
+            positions = self.analyzer._load_positions(self.inst_id)
+            if not positions:
+                return False
+            
+            # 使用第一个持仓作为参考
+            pos = positions[0]
+            old_tp = pos.get('take_profit', 0)
+            old_sl = pos.get('stop_loss', 0)
+            
+            new_tp = stop_adjustment.get('new_take_profit')
+            new_sl = stop_adjustment.get('new_stop_loss')
+            
+            # 如果调整幅度超过当前价格的2%，视为大幅调整
+            threshold = current_price * 0.02
+            
+            if new_tp and old_tp:
+                if abs(new_tp - old_tp) > threshold:
+                    logger.info(f"止盈大幅调整: {old_tp} -> {new_tp} (变化 {abs(new_tp - old_tp):.2f})")
+                    return True
+            
+            if new_sl and old_sl:
+                if abs(new_sl - old_sl) > threshold:
+                    logger.info(f"止损大幅调整: {old_sl} -> {new_sl} (变化 {abs(new_sl - old_sl):.2f})")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"检查止盈止损调整幅度失败: {e}")
+            return False
     
     def _send_email_alert(self, analysis_data: Dict):
         """发送邮件提醒"""
@@ -124,13 +218,36 @@ class TradingAnalysisBot:
         recommendation = analysis_data['recommendation']
         confidence = analysis_data['confidence']
         price = analysis_data['current_price']
+        urgent_action = analysis_data.get('urgent_action', False)
         
-        if recommendation == "BUY":
+        # 获取持仓信息
+        positions = self._get_positions()
+        has_position = self._check_has_position(positions, self.inst_id)
+        
+        # 将操作建议翻译成中文
+        rec_map = {
+            'BUY_LONG': '买多',
+            'BUY_SHORT': '买空',
+            'SELL': '卖出',
+            'ADJUST_STOPS': '调整止盈止损',
+            'HOLD': '继续持仓',
+            'WATCH': '观望'
+        }
+        action_text = rec_map.get(recommendation, recommendation)
+        
+        # 根据建议设置颜色和图标
+        if recommendation in ['BUY_LONG', 'BUY_SHORT']:
             color_start = "\033[92m"  # 绿色
+            icon = "📈"
         elif recommendation == "SELL":
             color_start = "\033[91m"  # 红色
-        else:
+            icon = "📉"
+        elif recommendation == "WATCH":
+            color_start = "\033[96m"  # 青色
+            icon = "👀"
+        else:  # HOLD, ADJUST_STOPS
             color_start = "\033[93m"  # 黄色
+            icon = "⏸️"
         
         color_end = "\033[0m"
         
@@ -138,9 +255,39 @@ class TradingAnalysisBot:
         print(f"📊 {self.inst_id} 分析结果")
         print(f"⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"💰 当前价格: {price:.2f} USDT")
-        print(f"{color_start}🎯 建议: {recommendation} (信心度: {confidence:.1f}%){color_end}")
         
-        if confidence >= self.confidence_threshold:
+        # 显示持仓状态
+        if has_position:
+            position = next(p for p in positions if p['inst_id'] == self.inst_id)
+            direction = "做多 📈" if position['direction'] == 'long' else "做空 📉"
+            entry_price = position['entry_price']
+            pnl_data = self.analyzer._calculate_position_pnl(position, price)
+            print(f"📌 当前持仓: {direction} | 开仓价: {entry_price} | 盈亏: {pnl_data['pnl_percent']:.2f}%")
+        else:
+            print(f"📌 当前持仓: 空仓")
+        
+        print(f"{color_start}{icon} 建议: {action_text} ({recommendation}) | 信心度: {confidence:.1f}%{color_end}")
+        
+        # 如果是调整止盈止损，显示调整幅度
+        if recommendation == 'ADJUST_STOPS':
+            stop_adj = analysis_data.get('stop_adjustment', {})
+            adjustment_percent = stop_adj.get('adjustment_percent')
+            if adjustment_percent:
+                print(f"⚙️  调整幅度: {adjustment_percent:.2f}%")
+            if stop_adj.get('new_take_profit'):
+                print(f"   新止盈: {stop_adj['new_take_profit']} USDT")
+            if stop_adj.get('new_stop_loss'):
+                print(f"   新止损: {stop_adj['new_stop_loss']} USDT")
+            if stop_adj.get('reason'):
+                print(f"   理由: {stop_adj['reason']}")
+        
+        # 显示邮件发送状态
+        if analysis_data.get('email_sent', False):
+            print(f"📧 邮件提醒已发送!")
+        
+        if urgent_action:
+            print(f"🚨🚨 紧急操作提醒: {analysis_data.get('urgent_reason', '')}")
+        elif confidence >= self.confidence_threshold and not analysis_data.get('email_sent', False):
             print(f"🚨 高信心度提醒! 建议立即关注")
         
         summary = analysis_data['analysis_summary']

@@ -1,13 +1,65 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
 dist/
 wheels/
 *.egg-info
+sdist/
+var/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+develop-eggs/
+downloads/
+.installed.cfg
+*.egg
 
 # Virtual environments
 .venv
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+trading_analysis.db
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+positions.json
+
+# Testing
+test_*.py
+
+# Docker
+.dockerignore
 
 .env
 
