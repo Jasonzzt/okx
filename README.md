@@ -6,6 +6,8 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Status](https://img.shields.io/badge/Status-Active-success.svg)
 
+![Email](./assets/email.png)
+
 ## ✨ 核心特性
 
 ### 📊 多策略支持
